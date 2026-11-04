@@ -1,6 +1,6 @@
 # Secure Password Manager — Design document
 
-All the decisions written here are at planning stage and nothing concrete is set in stone nor implemented.
+This document describes the target design. The HTTPS server and SQLite schema are implemented; authentication and browser cryptography remain planned. See README.MD for current progress and run instructions.
 
 ## 1. Scope and assets
 

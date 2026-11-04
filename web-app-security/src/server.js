@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('node:path');
 const fs = require('node:fs');
 const https = require('node:https');
+const { openDatabase } = require('./db');
 
 const app = express();
 const host = '127.0.0.1';
@@ -30,11 +31,23 @@ try {
 		process.exit(1);
 }
 
+// Initialize storage before accepting requests.
+let db;
+try {
+		db = openDatabase();
+} catch (error) {
+		console.error(`Unable to initialize database: ${error.message}`);
+		process.exit(1);
+}
+
+server.on('close', () => db.close());
+
 server.listen(port, host, () => {
 		console.log(`Server running at https://${host}:${port}`);
 });
 
 server.on('error', (error) => {
+		db.close();
 		console.error(`Unable to start server: ${error.message}`);
 		process.exit(1);
 });

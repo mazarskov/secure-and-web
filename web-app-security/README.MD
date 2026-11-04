@@ -101,8 +101,8 @@ Prompt, or Linux installations for WSL.
 
 Dependencies are listed in `package.json` and pinned in `package-lock.json`.
 No separate SQLite server, environment variables, or certificate setup is needed.
-The SQLite dependency is installed but is not used yet. If a prebuilt native
-binary is unavailable, installation requires Python 3 and a C++ build toolchain
+SQLite is embedded in the app. If a prebuilt native binary is unavailable,
+installation requires Python 3 and a C++ build toolchain
 (Visual Studio C++ Build Tools on Windows, or `make` and GCC/Clang on Linux).
 
 ### Install and Start
@@ -158,22 +158,108 @@ On Windows PowerShell, use `curl.exe` instead of `curl`. If Windows curl reports
 `CRYPT_E_NO_REVOCATION_CHECK`, add `--ssl-revoke-best-effort`; certificate and
 hostname verification remain enabled.
 
+### Local Database
+
+Starting the server automatically creates `data/password-manager.sqlite` and
+initializes any missing tables. No manual database setup is needed. The path is
+resolved relative to `src/db.js`, so it does not depend on the terminal directory.
+The database and its SQLite journal files are ignored by Git and are outside
+`public/`. Keep this data directory when restarting to preserve accounts and vaults.
+
+| Table | Purpose |
+| --- | --- |
+| `users` | Account ID, unique email, authentication verifier, creation time. |
+| `vault_keys` | One encrypted vault key per account, salt, KDF parameters, wrapping nonce, format version. |
+| `vault_items` | Encrypted entries linked to their owner, nonce, version, timestamps. |
+| `sessions` | Hashed session IDs linked to accounts, activity time, absolute expiry. |
+
+IDs are text (the application will generate them). Encrypted data, salts, and
+nonces are stored as binary BLOBs; KDF parameters are JSON text. AES-GCM values
+include the authentication tag: a wrapped 32-byte key occupies 48 bytes.
+Session hashes will be SHA-256 hex strings; timestamps use Unix seconds (UTC).
+Future entry updates must explicitly set `updated_at`.
+
+Foreign keys reject records without an existing owner. Deleting an account
+cascades to its vault key, entries, and sessions. Email uniqueness ignores letter
+case. These storage constraints support the API; request authorization and
+session-expiry enforcement will still be implemented separately.
+
+Initialization runs in one transaction and uses `CREATE TABLE IF NOT EXISTS`:
+it preserves existing rows on restart. WAL mode supports database reads during
+writes. Future changes to existing tables will require migrations; startup does
+not automatically alter their definitions.
+
+#### Table Schemas
+
+The SQL below matches `src/db.js`, including keys, defaults, constraints, and
+indexes. `STRICT` enforces the declared SQLite column types. Every column is
+required (`NOT NULL`); timestamp defaults use Unix seconds.
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+		id TEXT PRIMARY KEY NOT NULL,
+		email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+		auth_verifier TEXT NOT NULL,
+		created_at INTEGER NOT NULL DEFAULT (unixepoch())
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS vault_keys (
+		user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		kdf_salt BLOB NOT NULL CHECK (length(kdf_salt) >= 16),
+		kdf_parameters TEXT NOT NULL CHECK (json_valid(kdf_parameters)),
+		wrapped_dek BLOB NOT NULL CHECK (length(wrapped_dek) = 48),
+		wrapping_nonce BLOB NOT NULL CHECK (length(wrapping_nonce) = 12),
+		crypto_version INTEGER NOT NULL CHECK (crypto_version > 0)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS vault_items (
+		id TEXT PRIMARY KEY NOT NULL,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		ciphertext BLOB NOT NULL CHECK (length(ciphertext) >= 16),
+		nonce BLOB NOT NULL CHECK (length(nonce) = 12),
+		crypto_version INTEGER NOT NULL CHECK (crypto_version > 0),
+		created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+		updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS sessions (
+		session_id_hash TEXT PRIMARY KEY NOT NULL CHECK (length(session_id_hash) = 64),
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+		last_activity_at INTEGER NOT NULL DEFAULT (unixepoch()),
+		absolute_expiry INTEGER NOT NULL,
+		CHECK (last_activity_at >= created_at),
+		CHECK (absolute_expiry > created_at)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS vault_items_user_id ON vault_items(user_id);
+CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(absolute_expiry);
+```
+
+Run the database checks with:
+
+```bash
+npm test
+```
+
+Tests use temporary databases, leaving the application's data untouched. They
+cover persistence after reopening, case-insensitive email uniqueness, foreign
+keys, one vault key per account, deletion cleanup, and malformed crypto metadata
+or invalid session expiry. No example accounts are inserted by the app.
+
 ### Progress
 
-**Step 1:** `src/server.js` creates an Express application. `/api/health` returns
-JSON, and Express serves `public/index.html` at `/`. The API and frontend share
-one server and origin. Both npm scripts use this same entry point.
+**Step 1:** Express serves the placeholder page and `/api/health` from one origin.
+Both npm scripts use `src/server.js`; `dev` enables automatic restarts.
 
-**Step 2:** Node's built-in `https.createServer` serves Express over TLS 1.2 or
-newer using the bundled development certificate. Missing or invalid certificate
-files stop startup with a helpful message. Plain HTTP is not served. Vault
-encryption will separately protect stored entries in a later step.
+**Step 2:** HTTPS uses the bundled self-signed development certificate, with TLS
+1.2 as the minimum. The browser warning is expected for this local demo.
 
-Validation: the running development server presented the bundled certificate.
-The page and health endpoint passed on both local hostnames with explicit
-certificate verification. Without explicit trust, the self-signed certificate
-was rejected as expected. Plain HTTP was rejected and the private-key URL
-returned 404. Browser warning acceptance still needs a manual check.
+**Step 3:** `src/db.js` opens and initializes SQLite before the server accepts
+requests. All four tables, their relationships, and basic data constraints are
+implemented. Six database tests pass. Authentication and vault cryptography are
+not yet implemented.
 
-Next: initialize the SQLite database for users, encrypted vault keys, vault
-entries, and sessions.
+Next: derive separate authentication and vault-wrapping secrets from the master
+password in the browser.

@@ -148,3 +148,6 @@ certs/dev/*
 !certs/dev/localhost.pem
 !certs/dev/localhost-key.pem
 !certs/dev/README.md
+
+# Local SQLite database, including journal/WAL sidecar files
+/data/
