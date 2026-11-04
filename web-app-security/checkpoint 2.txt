@@ -1,0 +1,16 @@
+Web-Based Secure Password Manager
+Checkpoint 2, core requirements implemented (Week 9) 
+
+Deliverables. A running web application in the repository, plus a short progress note. 
+
+• Basic working web interface with the core flows. 
+
+• Basic server-side file encryption and decryption. 
+
+• Basic secure authentication implemented with password hashing, and secure 
+session management. 
+
+• Application served over TLS in the development setup. 
+
+• Run instructions that work on a clean machine, and a commit history showing 
+incremental progress. 

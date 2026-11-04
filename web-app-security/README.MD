@@ -89,61 +89,91 @@ The API routes listed above are planned functionality and can change over time.
 
 ## 4. Running the Project Locally
 
-As the project is a W.I.P, instructiond listed here might change over time.
-
 ### Prerequisites
 
-The following software is required:
+* Node.js 22 or newer, with npm (bundled with Node.js).
+* Git to clone the repository.
+* A web browser to open the application.
 
-* Node.js (a current LTS release).
-* npm.
-* Git, for version control.
+Check your installation with `node --version` and `npm --version`.
+Use Node.js and npm from the same environment: Windows for PowerShell/Command
+Prompt, or Linux installations for WSL.
 
-A separate SQLite database server is not required.
+Dependencies are listed in `package.json` and pinned in `package-lock.json`.
+No separate SQLite server, environment variables, or certificate setup is needed.
+The SQLite dependency is installed but is not used yet. If a prebuilt native
+binary is unavailable, installation requires Python 3 and a C++ build toolchain
+(Visual Studio C++ Build Tools on Windows, or `make` and GCC/Clang on Linux).
 
-### Installation
-
-Clone the repository and enter the project directory:
+### Install and Start
 
 ```bash
 git clone https://github.com/mazarskov/secure-and-web
 cd secure-and-web/web-app-security
-```
-
-Install the project dependencies:
-
-```bash
-npm install
-```
-
-### Start the Application
-
-Start the development server(not yet implemeneted):
-
-```bash
+npm ci
 npm run dev
 ```
 
-The application will be available at:
+`npm run dev` restarts the server when server files change. Alternatively, use
+`npm start` to run without watch mode. Stop either command with `Ctrl+C`.
 
-http://localhost:3000
+Open <https://127.0.0.1:3000> (or <https://localhost:3000>).
+The server listens only on the local machine, on port 3000. If that port is in
+use, stop the other process before starting the server.
 
-The backend health-check endpoint can be accessed at:
+### Development HTTPS Certificate
 
-http://localhost:3000/api/health
+A self-signed certificate and its matching key are included in `certs/dev/`.
+The browser will show a certificate warning because this certificate is not
+publicly trusted. For this local course demo, open the browser's advanced options
+and continue to the local address. No installation into the system trust store
+is needed. Browser or organization policies may prevent accepting the warning.
 
-The health-check endpoint should return:
+**The bundled private key is intentionally public and only for local development.**
+Use test data in this demo. Deployment requires a separate trusted certificate
+and a private key that is never committed. TLS encrypts the connection, but this
+shared development identity does not provide dependable server authentication.
+
+The certificate covers `localhost`, `127.0.0.1`, and `::1`; the server binds to
+`127.0.0.1`. It is kept outside `public/`, so Express does not serve the key.
+See [certs/dev/README.md](certs/dev/README.md) for validity and regeneration.
+OpenSSL is needed only if regenerating the bundled certificate.
+
+### Check the Server
+
+Open <https://127.0.0.1:3000/api/health> after accepting the browser warning.
+Expected response:
 
 ```json
-{
-  "status": "ok"
-}
+{"status":"ok"}
 ```
 
-To run the server without development watch mode(not yet implemented):
+For a terminal check, explicitly trust only the bundled certificate:
 
 ```bash
-npm start
+curl --cacert certs/dev/localhost.pem https://127.0.0.1:3000/api/health
 ```
 
-Stop the server by pressing `Ctrl+C` in the terminal.
+On Windows PowerShell, use `curl.exe` instead of `curl`. If Windows curl reports
+`CRYPT_E_NO_REVOCATION_CHECK`, add `--ssl-revoke-best-effort`; certificate and
+hostname verification remain enabled.
+
+### Progress
+
+**Step 1:** `src/server.js` creates an Express application. `/api/health` returns
+JSON, and Express serves `public/index.html` at `/`. The API and frontend share
+one server and origin. Both npm scripts use this same entry point.
+
+**Step 2:** Node's built-in `https.createServer` serves Express over TLS 1.2 or
+newer using the bundled development certificate. Missing or invalid certificate
+files stop startup with a helpful message. Plain HTTP is not served. Vault
+encryption will separately protect stored entries in a later step.
+
+Validation: the running development server presented the bundled certificate.
+The page and health endpoint passed on both local hostnames with explicit
+certificate verification. Without explicit trust, the self-signed certificate
+was rejected as expected. Plain HTTP was rejected and the private-key URL
+returned 404. Browser warning acceptance still needs a manual check.
+
+Next: initialize the SQLite database for users, encrypted vault keys, vault
+entries, and sessions.

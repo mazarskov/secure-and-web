@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+# Ignore local certificates except the intentionally public development pair.
+certs/*
+!certs/dev/
+certs/dev/*
+!certs/dev/localhost.pem
+!certs/dev/localhost-key.pem
+!certs/dev/README.md
