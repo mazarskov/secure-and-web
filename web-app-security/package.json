@@ -16,8 +16,11 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "argon2": "0.45.2",
+    "argon2-browser": "1.18.0",
     "better-sqlite3": "^13.0.3",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "express-rate-limit": "8.7.3"
   },
   "engines": {
     "node": ">=22"

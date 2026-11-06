@@ -4,12 +4,55 @@
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<title>Secure Password Manager</title>
+		<script src="/vendor/argon2-bundled.min.js" defer></script>
+		<script src="/app.js" type="module"></script>
+		<script src="/auth.mjs" type="module"></script>
 </head>
 <body>
 		<main>
 				<h1>Secure Password Manager</h1>
 				<p>The development server is running.</p>
-				<p>Account and vault features will be added in the next steps.</p>
+				<p>Create a test account or sign in. Vault-entry features will be added next.</p>
+				<section aria-labelledby="login-heading">
+						<h2 id="login-heading">Sign in</h2>
+						<form id="login-form">
+								<p><label for="login-email">Email</label>
+								<input id="login-email" type="email" autocomplete="username" maxlength="254" required></p>
+								<p><label for="login-password">Master password</label>
+								<input id="login-password" type="password" autocomplete="current-password" required></p>
+								<button id="login-button" type="submit" disabled>Sign in</button>
+						</form>
+						<p id="session-status" role="status" aria-live="polite">Checking session…</p>
+						<button id="session-button" type="button" disabled>Check session</button>
+						<button id="logout-button" type="button" disabled>Log out</button>
+						<noscript>Enable JavaScript to sign in.</noscript>
+				</section>
+				<section aria-labelledby="registration-heading">
+						<h2 id="registration-heading">Create an account</h2>
+						<p>Use test credentials with this development certificate. Choose a master password of at least 12 characters.</p>
+						<form id="registration-form">
+								<p><label for="registration-email">Email</label>
+								<input id="registration-email" type="email" autocomplete="username" maxlength="254" required></p>
+								<p><label for="registration-password">Master password</label>
+								<input id="registration-password" type="password" autocomplete="new-password" required></p>
+								<p><label for="registration-confirmation">Confirm master password</label>
+								<input id="registration-confirmation" type="password" autocomplete="new-password" required></p>
+								<button id="registration-button" type="submit" disabled>Create account</button>
+						</form>
+						<p id="registration-status" role="status" aria-live="polite"></p>
+						<noscript>Enable JavaScript to register.</noscript>
+				</section>
+				<section aria-labelledby="derivation-heading">
+						<h2 id="derivation-heading">Key derivation demo</h2>
+						<p>Use a test password. This demo runs locally in your browser and discards the results.</p>
+						<form id="derivation-form">
+								<label for="master-password">Test master password</label>
+								<input id="master-password" type="password" autocomplete="off" required>
+								<button id="derive-button" type="submit" disabled>Derive secrets</button>
+						</form>
+						<p id="derivation-status" role="status" aria-live="polite"></p>
+						<noscript>Enable JavaScript to use this demo.</noscript>
+				</section>
 				<p><a href="/api/health">Check server health</a></p>
 		</main>
 </body>

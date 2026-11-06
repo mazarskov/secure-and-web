@@ -1,6 +1,6 @@
 # Secure Password Manager — Design document
 
-This document describes the target design. The HTTPS server and SQLite schema are implemented; authentication and browser cryptography remain planned. See README.MD for current progress and run instructions.
+This document describes the target design. The HTTPS server, SQLite schema, browser key derivation, registration, login, and server-side sessions are implemented; vault unlocking and entry encryption remain planned. See README.MD for current progress and run instructions.
 
 ## 1. Scope and assets
 
@@ -51,6 +51,20 @@ flowchart TD
 
 **Database storage:** `users(id, email, auth_verifier, created_at)`; `vault_keys(user_id, kdf_salt, kdf_parameters, wrapped_dek, wrapping_nonce, crypto_version)`; `vault_items(id, user_id, ciphertext, nonce, crypto_version, created_at, updated_at)`; `sessions(session_id_hash, user_id, created_at, last_activity_at, absolute_expiry)`.
 
+**Implemented derivation format v1:** Argon2id v19 uses 65,536 KiB memory, 3 iterations,
+parallelism 1, a 16-byte random salt, and a 32-byte root. HKDF-SHA-256 uses the same
+salt with the labels above. The authentication output is a 32-byte array; the
+wrapping key is a non-exportable AES-GCM `CryptoKey` with `wrapKey`/`unwrapKey`
+usages. Only this parameter set is accepted for v1. Browser inputs use exact
+UTF-8 without trimming or normalization, with a 1024-byte maximum. The current
+derivation demo discards its outputs and makes no account requests. The separate
+registration form generates a random DEK, wraps it with AES-GCM and a fresh
+12-byte nonce, and submits the encrypted key plus public metadata and the
+password-equivalent authentication secret. The server independently hashes that
+secret with Argon2id (64 MiB, 3 iterations, parallelism 1, random salt) and saves
+both account records in one transaction. Binary API fields use Base64. No login
+session is created by registration.
+
 ## 5. Authentication and session plan
 
 - **Login:** Request the account's public KDF metadata; derive keys locally; submit the authentication secret over HTTPS; backend verifies its stored salted hash and issues a **new**, unpredictable, opaque server-side session ID. Generic errors, rate limiting, and consistent handling of nonexistent accounts reduce enumeration and brute-force attacks.
@@ -58,6 +72,19 @@ flowchart TD
 - **Expiry and fixation:** Enforce an illustrative 15-minute idle and 8-hour absolute session timeout **on the server**, rotate the session ID after login or privilege change and invalidate the previous ID; revoke on logout. Keep the vault locked after 5 minutes of inactivity, independently of the account session.
 - **CSRF:** SameSite is defense in depth; additionally verify Origin and use CSRF tokens for state-changing requests. Apply authorization checks on every protected route.
 - **Optional MFA (later):** TOTP verification after password-equivalent authentication and before session issuance, with separate protected recovery-code handling. MFA protects login but does not prevent offline guesses against stolen vault ciphertext.
+
+**Implemented session behavior:** Login rotates a random 32-byte session ID and stores
+only its SHA-256 hash. `__Host-session` is a Secure, HttpOnly, SameSite=Strict,
+host-only session cookie. SQLite tracks 15-minute idle and 8-hour absolute expiry;
+protected requests enforce both. `/api/auth/me` returns account data and a CSRF
+token derived with HMAC-SHA-256 (key: raw session ID, context: `csrf/v1`). Logout
+requires same-origin JSON plus that token and revokes the row and cookie.
+Login and registration require same-origin JSON before authentication. Public
+KDF metadata uses decoys for unknown accounts; unknown and incorrect logins use
+same-cost Argon2 verification and generic errors. These measures reduce obvious
+enumeration differences but do not guarantee email privacy. The browser currently
+discards the wrapping key after login; unlocking and vault inactivity locking
+remain the next step.
 
 ## 6. Threat model
 

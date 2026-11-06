@@ -61,11 +61,11 @@ The backend will expose the following REST API endpoints.
 
 | Method | Route | Description |
 | - | - | - |
-| POST | `/api/auth/register` | Register a new user and initialize their encrypted vault. |
-| POST | `/api/auth/login` | Authenticate a user and create a session. |
-| POST | `/api/auth/logout` | Invalidate the current session. |
-| GET | `/api/auth/me` | Retrieve the authenticated user's account information. |
-| GET | `/api/auth/parameters` | Retrieve public key-derivation parameters needed for authentication. |
+| POST | `/api/auth/register` | Implemented: register a user and store their encrypted vault key. |
+| POST | `/api/auth/login` | Implemented: authenticate and issue a new session. |
+| POST | `/api/auth/logout` | Implemented: revoke the current session (CSRF token required). |
+| GET | `/api/auth/me` | Implemented: retrieve account information and a CSRF token. |
+| GET | `/api/auth/parameters?email=...` | Implemented: retrieve public key-derivation parameters. |
 
 ### Vault
 
@@ -85,7 +85,7 @@ The vault API will accept and return encrypted credential data rather than plain
 
 GET `/api/health` to check whether the backend is running.
 
-The API routes listed above are planned functionality and can change over time.
+Authentication routes and the health check are implemented; vault routes remain planned.
 
 ## 4. Running the Project Locally
 
@@ -101,8 +101,9 @@ Prompt, or Linux installations for WSL.
 
 Dependencies are listed in `package.json` and pinned in `package-lock.json`.
 No separate SQLite server, environment variables, or certificate setup is needed.
-SQLite is embedded in the app. If a prebuilt native binary is unavailable,
-installation requires Python 3 and a C++ build toolchain
+SQLite is embedded in the app. The `better-sqlite3` and server-side `argon2`
+packages use native modules. If a prebuilt binary is unavailable, installation
+requires Python 3 and a C++ build toolchain
 (Visual Studio C++ Build Tools on Windows, or `make` and GCC/Clang on Linux).
 
 ### Install and Start
@@ -248,6 +249,202 @@ cover persistence after reopening, case-insensitive email uniqueness, foreign
 keys, one vault key per account, deletion cleanup, and malformed crypto metadata
 or invalid session expiry. No example accounts are inserted by the app.
 
+### Browser Key Derivation
+
+The home page now includes a **Key derivation demo**. Start the app, accept the
+local certificate warning, enter a test password, and click **Derive secrets**.
+Success confirms the computation; it does not create an account. The password
+field is cleared, the authentication-secret buffer is overwritten, and the demo
+discards its reference to the wrapping key. No secrets are displayed, logged,
+sent to the API, or stored in browser storage.
+
+`public/crypto.mjs` implements this flow:
+
+1. Generate a fresh 16-byte salt with `crypto.getRandomValues`.
+2. Encode the exact password as UTF-8 and derive a 32-byte root with Argon2id.
+3. Apply HKDF-SHA-256 with that salt and label `auth/v1` to derive the 32-byte
+   authentication secret. During registration this password-equivalent secret goes
+   to the backend over HTTPS, where it is hashed for later verification.
+4. Apply HKDF-SHA-256 with label `vault-wrap/v1` to derive a separate AES-256-GCM
+   key. It is a non-exportable `CryptoKey`, usable only for wrapping/unwrapping
+   the vault key. It stays in the browser.
+
+Version 1 metadata records these fixed parameters:
+
+| Parameter | Value |
+| --- | --- |
+| Algorithm / Argon2 version | Argon2id / 19 (0x13) |
+| Memory | 65,536 KiB (64 MiB) |
+| Iterations / parallelism | 3 / 1 |
+| Root output / salt length | 32 bytes / 16 bytes |
+| Metadata format version | 1 |
+
+The same password, salt, and parameters reproduce the same secrets; different
+labels separate their purposes. The salt and parameters are public metadata and
+must be retained for later login. This demo generates new metadata on each run
+and discards it; the registration form persists it with the account. Unsupported metadata is
+rejected before expensive work. Passwords must be nonempty and at most 1024
+UTF-8 bytes; they are not trimmed or normalized.
+
+The pinned `argon2-browser` dependency is served from
+`/vendor/argon2-bundled.min.js`, including its WebAssembly code. No CDN, frontend
+build step, or extra setup is needed after `npm ci`. Only that bundle is exposed
+from `node_modules`. The browser must support Web Crypto and WebAssembly.
+
+Clearing buffers is best effort: JavaScript strings, library copies, and
+`CryptoKey` objects cannot be reliably erased. The root and wrapping key must
+never be sent to the server. The registration form below uses these secrets to
+initialize an encrypted vault key.
+
+`npm test` now includes reference-vector checks against independently generated
+native Argon2id/HKDF/AES-GCM output, repeatability, wrapping-key permissions,
+password/salt changes, fresh salts, and invalid metadata.
+The demo was also checked in headless Chrome over HTTPS, including failure when
+the Argon2 bundle is unavailable, no network requests during derivation, and no
+browser-storage writes.
+
+Implementation references: [argon2-browser](https://github.com/antelle/argon2-browser)
+and the [Web Crypto specification](https://www.w3.org/TR/webcrypto/).
+
+### Account Registration
+
+After `npm ci`, run `npm run dev` and open the HTTPS home page. Under **Create an
+account**, enter an email and a matching test master password of at least 12
+characters (at most 1024 UTF-8 bytes). Passwords are preserved exactly, including
+spaces and Unicode. The length rule is checked in the browser: the server sees
+a derived secret and cannot measure the original password. Keep using test
+credentials with the bundled development certificate.
+
+The registration flow is:
+
+1. The browser generates a salt and derives the authentication and wrapping secrets.
+2. It generates a random AES-256 vault key and wraps it with AES-GCM using a fresh
+   12-byte nonce. The wrapped key includes the authentication tag (48 bytes total).
+3. It sends the payload below as JSON to `POST /api/auth/register`. Binary fields
+   use canonical Base64. The master password, root key, wrapping key, and plaintext
+   vault key are absent from the request.
+4. The server validates the payload and hashes the authentication secret using
+   Argon2id with an independent random salt, 64 MiB memory, 3 iterations,
+   parallelism 1, and a 32-byte hash. The encoded verifier includes these settings.
+5. One database transaction inserts the user and vault-key metadata together.
+   If either insert fails, neither record is kept. The response contains only
+   the account ID and normalized email.
+
+| Request field | Required format |
+| --- | --- |
+| `email` | ASCII email, at most 254 characters after trimming; stored lowercase. |
+| `authenticationSecret` | Base64 encoding of 32 bytes; never stored directly. |
+| `kdfSalt` | Base64 encoding of 16 bytes. |
+| `kdfParameters` | Exact version 1 parameter object listed above. |
+| `wrappedDek` | Base64 encoding of 48 encrypted bytes. |
+| `wrappingNonce` | Base64 encoding of 12 bytes. |
+| `cryptoVersion` | Integer `1`. |
+
+Unexpected fields are rejected. The server validates lengths and format; it
+cannot decrypt the wrapped key to verify its contents. Email ownership is not
+verified in this checkpoint step.
+
+Registration returns `201` on success, `400` for invalid input, `403` for a
+missing/foreign Origin, `409` for an unavailable account, `413` for a body over
+4 KiB, and `415` for a non-JSON request. Five attempts per IP per 15 minutes are
+allowed (`429` after that); this local in-memory limit resets on restart. At
+most two hashes run concurrently (`503` with a retry hint when busy). Internal
+failures return a generic `500`, without SQL details or request bodies.
+
+The browser supplies its same-origin `Origin` header automatically; API clients
+must supply one matching the server's scheme and host. Registration does not
+issue a cookie or authenticate the user. The password fields are cleared, the
+authentication buffer is overwritten, and remaining secret references are
+discarded on completion. No secrets are written to browser storage; JavaScript
+strings and library copies still cannot be guaranteed erased.
+
+Code responsibilities: `public/crypto.mjs` prepares the encrypted payload,
+`public/app.js` handles the form, `src/registration.js` validates/hashes/saves it,
+and `src/app.js` assembles the Express routes. `src/server.js` opens the database
+and starts HTTPS.
+
+Registration tests cover real Argon2 verification, random
+verifier salts, duplicate accounts, rollback on vault-key failure, input and
+Origin checks, request limits, key recovery, and rejection of a wrong password
+or modified wrapped key. HTTPS registration was also exercised in headless
+Chrome with a temporary database, checking the request fields, cleared password
+inputs, duplicate handling, and network-failure recovery. No test accounts were
+added to the application's database.
+
+Server hashing reference: [node-argon2](https://github.com/ranisalt/node-argon2).
+
+### Login and Secure Sessions
+
+Create a test account, then use **Sign in** with its email and master password.
+The password field is cleared after submission. A successful login shows the
+account email; the vault remains locked until the next implementation step.
+Reloading the page restores the account session through `/api/auth/me`.
+**Check session** explicitly checks validity; there is no automatic keep-alive
+polling. Use the same hostname throughout: `localhost` and `127.0.0.1` have
+separate host-only cookies.
+
+The login flow is:
+
+1. `GET /api/auth/parameters?email=...` returns the account's public salt and KDF
+   parameters. Unknown accounts receive same-shaped decoy metadata, stable within
+   a server run. This reduces obvious enumeration signals; it does not guarantee
+   account-existence privacy.
+2. The browser derives the authentication secret again and posts only `email`
+   and Base64 `authenticationSecret` to `POST /api/auth/login`.
+3. The server verifies the stored Argon2id hash. Unknown accounts run a dummy
+   Argon2 verification of the same cost and always fail. Wrong secrets and
+   unknown accounts return the same `401` error.
+4. Successful login generates a new 32-byte random session ID. Its SHA-256 hash
+   and timestamps go into SQLite; the raw ID goes only into the cookie.
+   A previous session presented by the same browser is revoked, preventing
+   reuse of a fixed or pre-login ID. Other device sessions remain independent.
+5. The response contains `{ user: { id, email }, csrfToken }`. The browser keeps
+   the CSRF token in module memory; the session ID is never exposed to JavaScript.
+
+The cookie is named `__Host-session` with `Secure`, `HttpOnly`, `SameSite=Strict`,
+`Path=/`, no `Domain`, and no persistent expiry. The server enforces a **15-minute
+idle timeout** and an **8-hour absolute lifetime**, regardless of browser cookie
+retention. Authenticated activity updates idle time but never extends the
+absolute deadline. Expired sessions are rejected, deleted, and cleared from the
+browser. Login also cleans up other expired rows. Valid sessions survive a
+server restart because they are stored in SQLite.
+
+`GET /api/auth/me` requires a valid cookie and returns account information plus
+the session-bound CSRF token. All authentication responses use `Cache-Control:
+no-store`. The CSRF token is HMAC-SHA-256 keyed by the high-entropy raw session ID
+with context `csrf/v1`; it can be reproduced after a restart without storing a
+raw session ID or adding a database column. Verification uses constant-time
+comparison after checking the token's format.
+
+`POST /api/auth/logout` requires a same-origin `Origin`, JSON content type, the
+session cookie, and `X-CSRF-Token`. It deletes the session row, expires the cookie,
+and returns `204`. Replaying the revoked cookie returns `401`. Public registration
+and login require same-origin JSON too; authenticated mutations use the added
+CSRF token. Future vault mutation routes must use the same session/CSRF guards.
+No CORS permissions are granted to external origins.
+
+Login allows 10 attempts per IP per 15 minutes; parameter requests allow 30.
+Limits are in-memory and reset on restart. Login verification runs at most two
+Argon2 operations concurrently (`503` plus a retry hint if busy). Invalid input
+returns `400`, missing/foreign Origin `403`, non-JSON `415`, and throttling `429`.
+Passwords, derived authentication secrets, CSRF tokens, and raw session IDs are
+not logged or stored in localStorage/sessionStorage. The browser discards the
+wrapping key after login for now; vault unlocking is still separate work.
+
+`src/auth-input.js` shares input/Origin checks; `src/authentication.js` handles
+parameters, login, account information, and logout routes. `src/sessions.js`
+manages IDs, cookies, expiry, and CSRF. `public/auth.mjs` handles the UI.
+
+Validation: all **36 tests** pass. Tests cover cookie flags, ID rotation, idle and
+absolute expiry using an injected clock, restart persistence, forged/duplicate
+cookies, logout replay, CSRF binding, generic credential errors, and request
+limits. Headless Chrome checks exercise the full HTTPS registration/login flow,
+HttpOnly cookie behavior, page reload, rotation, idle expiry, logout, and network
+failure recovery. These checks use temporary databases.
+
+References: [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
+and [OWASP CSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+
 ### Progress
 
 **Step 1:** Express serves the placeholder page and `/api/health` from one origin.
@@ -258,8 +455,17 @@ Both npm scripts use `src/server.js`; `dev` enables automatic restarts.
 
 **Step 3:** `src/db.js` opens and initializes SQLite before the server accepts
 requests. All four tables, their relationships, and basic data constraints are
-implemented. Six database tests pass. Authentication and vault cryptography are
-not yet implemented.
+implemented. Six database tests cover persistence and constraints.
 
-Next: derive separate authentication and vault-wrapping secrets from the master
-password in the browser.
+**Step 4:** Browser-side Argon2id and HKDF key derivation is implemented, with a
+local demo and reference-vector tests.
+
+**Step 5:** Registration generates and wraps the vault key in the browser, then
+stores a server-side Argon2id verifier and encrypted key metadata atomically.
+
+**Step 6:** Login, secure server-side sessions, protected account information,
+timeouts, ID rotation, CSRF validation, and logout are implemented. The browser
+restores an existing account session on reload; the vault remains locked.
+
+Next: retrieve and unwrap the encrypted vault key in the browser, then add
+manual locking and inactivity-based vault locking independently of the session.

@@ -1,19 +1,23 @@
-const express = require('express');
 const path = require('node:path');
 const fs = require('node:fs');
 const https = require('node:https');
 const { openDatabase } = require('./db');
+const { createApp } = require('./app');
 
-const app = express();
 const host = '127.0.0.1';
 const port = 3000;
 
-app.get('/api/health', (req, res) => {
-		res.json({ status: 'ok' });
-});
-
-// Resolve from this file so static files do not depend on the working directory.
-app.use(express.static(path.join(__dirname, '../public')));
+// Initialize storage before creating routes and accepting requests.
+let db;
+let app;
+try {
+		db = openDatabase();
+		app = createApp(db);
+} catch (error) {
+		if (db?.open) db.close();
+		console.error(`Unable to initialize application: ${error.message}`);
+		process.exit(1);
+}
 
 // Publicly shared development credentials; keep outside the static web folder.
 const certDirectory = path.join(__dirname, '../certs/dev');
@@ -26,17 +30,9 @@ try {
 				minVersion: 'TLSv1.2',
 		}, app);
 } catch (error) {
+		db.close();
 		console.error(`Unable to load HTTPS certificates: ${error.message}`);
 		console.error('Restore the bundled files in certs/dev/ or see README.MD to regenerate them.');
-		process.exit(1);
-}
-
-// Initialize storage before accepting requests.
-let db;
-try {
-		db = openDatabase();
-} catch (error) {
-		console.error(`Unable to initialize database: ${error.message}`);
 		process.exit(1);
 }
 
